@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Crimson Spur: Origins</title>
+<style>
+    body { margin: 0; background: #0f172a; overflow: hidden; touch-action: none; font-family: 'Courier New', monospace; }
+    #game-container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; background: #000; }
+    canvas { background: #000; max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+    #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+    #party-status { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.8); padding: 10px; border-radius: 8px; color: white; border: 1px solid #333; min-width: 150px; }
+    #controls { position: absolute; bottom: 20px; left: 20px; right: 20px; height: 140px; pointer-events: auto; display: flex; justify-content: space-between; align-items: flex-end; }
+    .d-pad { display: grid; grid-template-columns: 60px 60px 60px; grid-template-rows: 60px 60px; gap: 5px; }
+    button { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; font-size: 24px; border-radius: 12px; backdrop-filter: blur(4px); }
+    button:active { background: rgba(255,255,255,0.5); }
+    #btn-up { grid-column: 2; grid-row: 1; }
+    #btn-left { grid-column: 1; grid-row: 2; }
+    #btn-down { grid-column: 2; grid-row: 2; }
+    #btn-right { grid-column: 3; grid-row: 2; }
+    #btn-attack { width: 90px; height: 90px; border-radius: 50%; background: rgba(220, 38, 38, 0.6); font-size: 35px; border: 2px solid rgba(255,255,255,0.5); margin-bottom: 15px; }
+    #btn-attack:active { background: rgba(220, 38, 38, 0.9); }
+</style>
+</head>
+<body>
+<div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-layer">
+        <div id="party-status"><div id="stats-content">Loading Origins...</div></div>
+        <div id="controls">
+            <div class="d-pad">
+                <button id="btn-up">▲</button>
+                <button id="btn-left">◀</button>
+                <button id="btn-down">▼</button>
+                <button id="btn-right">▶</button>
+            </div>
+            <button id="btn-attack">⚔️</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ==================== CONFIG ====================
+const CANVAS_WIDTH = 360, CANVAS_HEIGHT = 640; 
+const WORLD_SIZE = 5000; 
+const CHUNK_SIZE = 100;
+
+// ==================== STATE ====================
+const GameState = {
+    player: { x: 2500, y: 2500, hp: 100, maxHp: 100, xp: 0, maxXp: 100, level: 1, speed: 6, name: "Commander", gold: 0, facing: 0 },
+    mercs: [
+        { id: 1, name: "Ironclad", class: "TANK", x: 2450, y: 2500, hp: 150, maxHp: 150, color: "#1e3a8a", range: 50, state: "IDLE" },
+        { id: 2, name: "Lumina",   class: "HEAL", x: 2450, y: 2450, hp: 80,  maxHp: 80,  color: "#d946ef", range: 150, state: "IDLE", cooldown: 0 }
+    ],
+    enemies: [], loot: [], particles: [], scenery: [], effects: [], keys: {}, fogGrid: []
+};
+
+// ==================== ENGINE ====================
+function initWorld() {
+    const rows = Math.ceil(WORLD_SIZE / CHUNK_SIZE);
+    for (let y = 0; y < rows; y++) GameState.fogGrid[y] = new Uint8Array(rows).fill(0);
+    
+    // Generate Scenery
+    for(let i=0; i<800; i++) {
+        GameState.scenery.push({
+            x: Math.random() * WORLD_SIZE, y: Math.random() * WORLD_SIZE,
+            type: Math.random() > 0.8 ? 'rock' : 'tree',
+            size: 25 + Math.random() * 50
+        });
+    }
+    for(let i=0; i<12; i++) spawnEnemy();
+}
+
+function spawnEnemy() {
+    const types = [
+        { name: "Goblin", hp: 40, color: "#ef4444", xp: 20, size: 28 },
+        { name: "Orc", hp: 100, color: "#15803d", xp: 50, size: 36 },
+        { name: "Spider", hp: 60, color: "#374151", xp: 40, size: 32 }
+    ];
+    const type = types[Math.floor(Math.random() * types.length)];
+    let ex, ey;
+    do {
+        const angle = Math.random() * Math.PI * 2;
+        const range = 400 + Math.random() * 500;
+        ex = GameState.player.x + Math.cos(angle) * range;
+        ey = GameState.player.y + Math.sin(angle) * range;
+        ex = Math.max(0, Math.min(ex, WORLD_SIZE)); ey = Math.max(0, Math.min(ey, WORLD_SIZE));
+    } while (false);
+    
+    GameState.enemies.push({ id: Math.random(), x: ex, y: ey, hp: type.hp, maxHp: type.hp, name: type.name, color: type.color, xp: type.xp, size: type.size });
+}
+
+function update() {
+    const p = GameState.player;
+    // Movement
+    if (GameState.keys['ArrowUp']) { p.y -= p.speed; p.facing = -Math.PI/2; }
+    if (GameState.keys['ArrowDown']) { p.y += p.speed; p.facing = Math.PI/2; }
+    if (GameState.keys['ArrowLeft']) { p.x -= p.speed; p.facing = Math.PI; }
+    if (GameState.keys['ArrowRight']) { p.x += p.speed; p.facing = 0; }
+    
+    // Fog
+    const cx = Math.floor(p.x/CHUNK_SIZE), cy = Math.floor(p.y/CHUNK_SIZE), reach = 4;
+    for (let y = cy - reach; y <= cy + reach; y++) 
+        for (let x = cx - reach; x <= cx + reach; x++) 
+            if (y>=0 && y<GameState.fogGrid.length && x>=0 && x<GameState.fogGrid[0].length && GameState.fogGrid[y][x]===0) GameState.fogGrid[y][x]=1;
+
+    // Squad AI
+    GameState.mercs.forEach(merc => {
+        const dist = Math.hypot(merc.x - p.x, merc.y - p.y);
+        const enemy = GameState.enemies.find(e => Math.hypot(e.x - merc.x, e.y - merc.y) < 300);
+        
+        if (merc.class === "HEAL") merc.state = (p.hp < p.maxHp * 0.7 && Date.now() > merc.cooldown) ? "HEAL" : (dist > 120 ? "FOLLOW" : "IDLE");
+        else if (merc.class === "TANK") merc.state = (enemy) ? "CHASE" : (dist > 90 ? "FOLLOW" : "IDLE");
+
+        if (merc.state === "FOLLOW") { const a = Math.atan2(p.y-merc.y, p.x-merc.x); merc.x += Math.cos(a)*4.5; merc.y += Math.sin(a)*4.5; }
+        else if (merc.state === "CHASE" && enemy) { 
+            const a = Math.atan2(enemy.y-merc.y, enemy.x-merc.x); merc.x += Math.cos(a)*4; merc.y += Math.sin(a)*4;
+            if(Math.hypot(enemy.x-merc.x, enemy.y-merc.y)<merc.range) { enemy.hp-=2; createParticle(enemy.x, enemy.y, "2", "#fff"); }
+        }
+        else if (merc.state === "HEAL") { p.hp = Math.min(p.maxHp, p.hp + 40); createParticle(p.x, p.y, "HEAL!", "#d946ef"); GameState.effects.push({type:'beam', x1:merc.x, y1:merc.y, x2:p.x, y2:p.y, life:15}); merc.cooldown = Date.now()+5000; merc.state="IDLE"; }
+    });
+
+    // Loot
+    GameState.loot = GameState.loot.filter(l => { 
+        if(Math.hypot(l.x-p.x, l.y-p.y)<60) { p.gold+=l.val; createParticle(p.x,p.y,`+${l.val}g`,"#facc15"); return false; } 
+        return true; 
+    });
+}
+
+function playerAttack() {
+    GameState.effects.push({type: 'slash', x: GameState.player.x, y: GameState.player.y, angle: GameState.player.facing, life: 10});
+    GameState.enemies.forEach(e => { if(Math.hypot(e.x-GameState.player.x, e.y-GameState.player.y)<100) { e.hp-=25; createParticle(e.x,e.y,"25","#fff"); } });
+    GameState.enemies = GameState.enemies.filter(e => { if(e.hp<=0) { GameState.loot.push({x:e.x, y:e.y, val:15}); gainXp(e.xp); return false; } return true; });
+    if (GameState.enemies.length < 8) spawnEnemy();
+}
+
+function gainXp(a) { const p = GameState.player; p.xp+=a; if(p.xp>=p.maxXp) { p.level++; p.xp=0; p.maxXp*=1.5; p.maxHp+=20; p.hp=p.maxHp; createParticle(p.x, p.y-50, "LEVEL UP!", "#fbbf24"); } }
+function createParticle(x,y,t,c) { GameState.particles.push({x,y,text:t,color:c,life:40}); }
+
+// ==================== RENDER ====================
+const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d');
+canvas.width = CANVAS_WIDTH; canvas.height = CANVAS_HEIGHT;
+initWorld();
+
+function loop() {
+    update();
+    const p = GameState.player;
+    
+    // Background (Void)
+    ctx.fillStyle = "#000"; ctx.fillRect(0,0,CANVAS_WIDTH,CANVAS_HEIGHT);
+    ctx.save(); ctx.translate(-p.x+CANVAS_WIDTH/2, -p.y+CANVAS_HEIGHT/2);
+
+    // Fog & Terrain System
+    const sc = Math.floor((p.x-400)/CHUNK_SIZE), ec = Math.floor((p.x+400)/CHUNK_SIZE);
+    const sr = Math.floor((p.y-400)/CHUNK_SIZE), er = Math.floor((p.y+400)/CHUNK_SIZE);
+
+    // 1. Draw Explored Ground
+    for(let y=sr; y<=er; y++) for(let x=sc; x<=ec; x++) 
+        if(y>=0 && y<GameState.fogGrid.length && x>=0 && x<GameState.fogGrid[0].length && GameState.fogGrid[y][x]>=1) 
+        { ctx.fillStyle="#166534"; ctx.fillRect(x*CHUNK_SIZE, y*CHUNK_SIZE, CHUNK_SIZE+1, CHUNK_SIZE+1); }
+
+    // 2. Draw Objects (Only on explored ground)
+    GameState.scenery.forEach(s => {
+        const gx=Math.floor(s.x/CHUNK_SIZE), gy=Math.floor(s.y/CHUNK_SIZE);
+        if(gx>=0 && gy>=0 && gy<GameState.fogGrid.length && GameState.fogGrid[gy][gx]===1) {
+            ctx.fillStyle=s.type==='tree'?"#14532d":"#475569"; ctx.beginPath(); ctx.arc(s.x, s.y, s.size, 0, Math.PI*2); ctx.fill();
+        }
+    });
+
+    // 3. Fog Dimming (Memory)
+    for(let y=sr; y<=er; y++) for(let x=sc; x<=ec; x++) {
+        if(y>=0 && y<GameState.fogGrid.length && x>=0 && x<GameState.fogGrid[0].length) {
+             const cx=x*CHUNK_SIZE, cy=y*CHUNK_SIZE;
+             if(GameState.fogGrid[y][x]===1 && Math.hypot(cx+50-p.x, cy+50-p.y)>350) { 
+                 ctx.fillStyle="rgba(0,0,0,0.6)"; ctx.fillRect(cx,cy,CHUNK_SIZE+1, CHUNK_SIZE+1); 
+             }
+        }
+    }
+
+    // 4. Entities
+    const range = 350;
+    GameState.loot.forEach(l => { if(Math.hypot(l.x-p.x, l.y-p.y)<range) { ctx.fillStyle="#facc15"; ctx.fillRect(l.x-8,l.y-8,16,16); } });
+    GameState.enemies.forEach(e => { if(Math.hypot(e.x-p.x, e.y-p.y)<range) { ctx.fillStyle=e.color; ctx.fillRect(e.x-e.size/2,e.y-e.size/2,e.size,e.size); ctx.fillStyle="red"; ctx.fillRect(e.x-15,e.y-e.size,30*(e.hp/e.maxHp),4); } });
+    
+    // Squad
+    ctx.fillStyle="#3b82f6"; ctx.fillRect(p.x-16,p.y-16,32,32); 
+    GameState.mercs.forEach(m => { ctx.fillStyle=m.color; ctx.fillRect(m.x-16,m.y-16,32,32); });
+
+    // VFX
+    GameState.effects.forEach(fx => { 
+        if(fx.type==='slash'){ctx.strokeStyle="white";ctx.lineWidth=4;ctx.beginPath();ctx.arc(fx.x,fx.y,50,fx.angle-0.5,fx.angle+0.5);ctx.stroke();} 
+        if(fx.type==='beam'){ctx.strokeStyle="#d946ef";ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(fx.x1,fx.y1);ctx.lineTo(fx.x2,fx.y2);ctx.stroke();} 
+        fx.life--; 
+    }); GameState.effects=GameState.effects.filter(f=>f.life>0);
+    
+    ctx.font="bold 20px Arial"; GameState.particles.forEach(pt=>{ctx.fillStyle=pt.color;ctx.fillText(pt.text,pt.x,pt.y);pt.y-=1;pt.life--;}); 
+    GameState.particles=GameState.particles.filter(p=>p.life>0);
+    ctx.restore();
+    
+    // UI Updates
+    document.getElementById('stats-content').innerHTML = `
+        <div style="margin-bottom:6px; font-weight:bold">🛡️ ${p.name}: ${Math.floor(p.hp)}/${p.maxHp}</div>
+        ${GameState.mercs.map(m => `<div style="color:${m.color}; font-size:12px; margin-bottom:2px">● ${m.name}: ${Math.floor(m.hp)}HP [${m.state}]</div>`).join('')}
+        <div style="margin-top:6px; color:#facc15">💰 ${p.gold}g | Lvl ${p.level}</div>
+    `;
+
+    requestAnimationFrame(loop);
+}
+
+// Input Handlers
+window.addEventListener('keydown', e=>GameState.keys[e.key]=true); window.addEventListener('keyup', e=>GameState.keys[e.key]=false);
+const btnMap={'btn-up':'ArrowUp','btn-down':'ArrowDown','btn-left':'ArrowLeft','btn-right':'ArrowRight'}; 
+Object.keys(btnMap).forEach(id=>{const b=document.getElementById(id); if(b){
+    b.addEventListener('touchstart',e=>{e.preventDefault();GameState.keys[btnMap[id]]=true;}); b.addEventListener('touchend',e=>{e.preventDefault();GameState.keys[btnMap[id]]=false;});
+    b.addEventListener('mousedown',e=>{GameState.keys[btnMap[id]]=true;}); b.addEventListener('mouseup',e=>{GameState.keys[btnMap[id]]=false;});
+}});
+const ab=document.getElementById('btn-attack'); if(ab){ab.addEventListener('touchstart',e=>{e.preventDefault();playerAttack();}); ab.addEventListener('mousedown',e=>{playerAttack();});}
+loop();
+</script>
+</body>
+</html>
